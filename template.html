@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>Thought-Net — 三層思考グラフ</title>
+<title>Thought-Net — three-layer thought graph</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0e1116; overflow: hidden; }
   #hud {
@@ -34,20 +34,10 @@
 <div id="hud">
   <b>Thought-Net</b> <span id="gen"></span>
   <div id="meter" style="margin:4px 0 2px;font-size:12px"></div>
-  <span class="sw" style="background:#ff7b72"></span>🖥ライブ（今開いてる窓）
-  <span class="sw" style="background:#e8a94e;margin-left:10px"></span>思考層
-  <span class="sw" style="background:#7ee8fa;margin-left:10px"></span>凍結（&gt;21日）
-  <span class="sw" style="background:#8be9a8;margin-left:10px"></span>影響半径（近→遠）
-  <span class="sw" style="background:#5b8dbf;margin-left:10px"></span>知識層（未到達）<br>
-  クリック=近傍ハイライト / ドラッグ=回転 / ホイール=ズーム
-  <details style="margin-top:6px"><summary style="cursor:pointer">📖 読み方（5つの型）</summary>
-    <div style="max-width:420px;padding-top:4px">
-    1. <b>緑のまとまり</b>: 一塊なら収束期、飛び地だらけなら発散期。発散が3日続いたら窓の棚卸し合図<br>
-    2. <b>暗い青の大陸</b>: 今の思考が届いてない知識。緑との境界線が「次につながる予感」の発生地帯<br>
-    3. <b>垂直エッジの細い思考ノード</b>: 記録の薄い空中プロジェクト＝頭の中にしかない（bus factor 警報）<br>
-    4. <b>水色（凍結）が緑の近く</b>: 解凍検討。🌱候補はここを機械化したもの<br>
-    5. <b>🖥ライブが思考層のどこに刺さってるか</b>: 全窓は中央のライブハブ（🖥今の窓）に束ねて表示。ハブから台帳へ橋が伸びてれば継続作業、ハブだけに繋がる窓は未帰属＝新規発散（作業dirが既知プロジェクト外）
-    </div>
+  <div id="legend"></div>
+  <div id="controls" style="margin-top:2px"></div>
+  <details style="margin-top:6px"><summary id="guide-title" style="cursor:pointer"></summary>
+    <div id="guide" style="max-width:440px;padding-top:4px"></div>
   </details>
   <div id="thaw"></div>
 </div>
@@ -56,17 +46,84 @@
 <script src="3d-force-graph.min.js"></script>
 <script>
 const data = /*__GRAPH_DATA__*/;
-document.getElementById('gen').textContent = '(' + data.generated + ' 生成)';
 
-// 思考モードメーター（発散/収束）を HUD に表示（textContent=XSS安全）
+// ---- i18n（デフォルト en・build.py が data.lang を出す）
+const I18N = {
+  en: {
+    gen: y => `(generated ${y})`,
+    legend: [['#ff7b72','🖥 live (open windows)'],['#e8a94e','thought layer'],
+             ['#7ee8fa','frozen (>21d)'],['#8be9a8','influence radius (near→far)'],
+             ['#5b8dbf','knowledge (unreached)']],
+    controls: 'click = highlight neighbors / drag = rotate / wheel = zoom',
+    guideTitle: '📖 How to read it (5 patterns)',
+    guide: [
+      ['Green clusters','one blob = converging, scattered islands = diverging. 3 diverging days = time to prune windows.'],
+      ['Dark-blue continent',"knowledge your current thinking doesn't reach. The green/blue border is where the next connection tends to appear."],
+      ['Thin thought nodes','a project with few edges is barely recorded — it lives only in your head (bus-factor warning).'],
+      ['Frozen (cyan) near green','consider reopening. The 🌱 thaw candidates are this, computed.'],
+      ['Where 🖥 live pins in','windows bundle to a central live hub. A bridge from the hub to a project = ongoing work; a window on the hub alone = unassigned (working dir outside any known project).'],
+    ],
+    mode: 'thinking mode', diverging: 'diverging', neutral: 'steady', converging: 'converging',
+    meter: (d,n,c,u) => ` — ${n} projects in ${d}d / windows ${c} linked, ${u} unlinked`,
+    thawScore: (s,d) => ` (score ${s}, last ${d})`,
+    layer: {0:'knowledge',1:'thought',2:'live'},
+    metaDeg: 'links', metaDist: 'influence dist', metaFrozen: '❄ frozen',
+    connected: (t,l,th,k) => `${t} direct links — live ${l} / thought ${th} / knowledge ${k}`,
+    isolated: 'no links (isolated node)', more: n => `  …${n} more`,
+  },
+  ja: {
+    gen: y => `(${y} 生成)`,
+    legend: [['#ff7b72','🖥ライブ（今開いてる窓）'],['#e8a94e','思考層'],
+             ['#7ee8fa','凍結（>21日）'],['#8be9a8','影響半径（近→遠）'],
+             ['#5b8dbf','知識層（未到達）']],
+    controls: 'クリック=近傍ハイライト / ドラッグ=回転 / ホイール=ズーム',
+    guideTitle: '📖 読み方（5つの型）',
+    guide: [
+      ['緑のまとまり','一塊なら収束期、飛び地だらけなら発散期。発散が3日続いたら窓の棚卸し合図'],
+      ['暗い青の大陸','今の思考が届いてない知識。緑との境界線が「次につながる予感」の発生地帯'],
+      ['垂直エッジの細い思考ノード','記録の薄い空中プロジェクト＝頭の中にしかない（bus factor 警報）'],
+      ['水色（凍結）が緑の近く','解凍検討。🌱候補はここを機械化したもの'],
+      ['🖥ライブが思考層のどこに刺さってるか','全窓は中央のライブハブに束ねて表示。ハブから台帳へ橋が伸びてれば継続作業、ハブだけに繋がる窓は未帰属＝新規発散'],
+    ],
+    mode: '🧭 思考モード', diverging: '発散', neutral: '標準', converging: '収束',
+    meter: (d,n,c,u) => ` — 直近${d}日 ${n}案件 / 窓 ${c}接続・${u}未帰属`,
+    thawScore: (s,d) => ` (score ${s}, 最終 ${d})`,
+    layer: {0:'知識',1:'思考',2:'ライブ'},
+    metaDeg: 'つながり', metaDist: '影響距離', metaFrozen: '❄ 凍結',
+    connected: (t,l,th,k) => `直接つながる ${t} 件 — ライブ${l}/思考${th}/知識${k}`,
+    isolated: 'つながりなし（孤立ノード）', more: n => `  …他 ${n} 件`,
+  },
+};
+const L = I18N[data.lang] || I18N.en;
+
+document.getElementById('gen').textContent = L.gen(data.generated);
+
+// 凡例・操作説明・読み方ガイドを辞書から描画（全て textContent=XSS安全）
+const legendEl = document.getElementById('legend');
+L.legend.forEach(([c, label], i) => {
+  const sw = document.createElement('span');
+  sw.className = 'sw'; sw.style.background = c;
+  if (i) sw.style.marginLeft = '10px';
+  legendEl.append(sw, label);
+});
+document.getElementById('controls').textContent = L.controls;
+document.getElementById('guide-title').textContent = L.guideTitle;
+const guideEl = document.getElementById('guide');
+L.guide.forEach(([head, body], i) => {
+  const b = document.createElement('b'); b.textContent = head;
+  guideEl.append(`${i + 1}. `, b, ': ' + body);
+  guideEl.appendChild(document.createElement('br'));
+});
+
+// 思考モードメーター（textContent=XSS安全）
 if (data.focus_meter) {
   const fm = data.focus_meter;
   const el = document.getElementById('meter');
-  const col = fm.mode === '発散' ? '#e8a94e' : fm.mode === '収束' ? '#8be9a8' : '#adbac7';
+  const col = fm.mode === 'diverging' ? '#e8a94e' : fm.mode === 'converging' ? '#8be9a8' : '#adbac7';
   const badge = document.createElement('b');
-  badge.textContent = fm.mode; badge.style.color = col;
-  el.append('🧭 思考モード: ', badge,
-    ` — 直近${data.recent_days}日 ${fm.recent_projects}案件 / 窓 ${fm.live_connected}接続・${fm.live_unconnected}未帰属`);
+  badge.textContent = L[fm.mode]; badge.style.color = col;
+  el.append(L.mode + ': ', badge,
+    L.meter(data.recent_days, fm.recent_projects, fm.live_connected, fm.live_unconnected));
 }
 
 const Z = { 0: -90, 1: 90, 2: 170 };    // 知識層 / 思考層 / ライブ層
@@ -105,11 +162,10 @@ if (data.thaw && data.thaw.length) {
     const line = document.createElement('div');
     const b = document.createElement('b');
     b.textContent = t.project;                       // textContent = HTML 無効化
-    line.append('🌱 ', b,
-      ` (score ${t.score}, 最終 ${t.last_touch})`);
+    line.append('🌱 ', b, L.thawScore(t.score, t.last_touch));
     const via = document.createElement('div');
     via.style.paddingLeft = '1em';
-    via.textContent = '↳ ' + t.via.map(v => `${v.label} (d${v.dist})`).join('・');
+    via.textContent = '↳ ' + t.via.map(v => `${v.label} (d${v.dist})`).join(' / ');
     thawEl.append(line, via);
   });
 }
@@ -117,7 +173,7 @@ const escHtml = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ---- 選択ノードの要約パネル（近傍を層別に集計。全て textContent=XSS安全）
-const LAYER_NAME = { 0: '知識', 1: '思考', 2: 'ライブ' };
+const LAYER_NAME = L.layer;
 const panelEl = document.getElementById('panel');
 function showPanel(node) {
   panelEl.textContent = '';
@@ -133,9 +189,9 @@ function showPanel(node) {
 
   const meta = document.createElement('div');
   meta.className = 'meta';
-  const bits = [`層: ${LAYER_NAME[node.layer] || '?'}`, `つながり ${node.degree}`];
-  if (typeof node.dist === 'number') bits.push(`影響距離 ${node.dist}`);
-  if (node.frozen) bits.push('❄ 凍結');
+  const bits = [`${LAYER_NAME[node.layer] || '?'}`, `${L.metaDeg} ${node.degree}`];
+  if (typeof node.dist === 'number') bits.push(`${L.metaDist} ${node.dist}`);
+  if (node.frozen) bits.push(L.metaFrozen);
   if (node.status) bits.push(node.status);
   meta.textContent = bits.join(' ・ ');
   panelEl.appendChild(meta);
@@ -148,8 +204,8 @@ function showPanel(node) {
   const head = document.createElement('div');
   head.className = 'meta';
   head.textContent = total
-    ? `直接つながる ${total} 件 — ライブ${groups[2].length}/思考${groups[1].length}/知識${groups[0].length}`
-    : 'つながりなし（孤立ノード）';
+    ? L.connected(total, groups[2].length, groups[1].length, groups[0].length)
+    : L.isolated;
   panelEl.appendChild(head);
 
   for (const layer of [2, 1, 0]) {
@@ -158,7 +214,7 @@ function showPanel(node) {
     const grp = document.createElement('div');
     grp.className = 'grp';
     const title = document.createElement('b');
-    title.textContent = `${LAYER_NAME[layer]}層 (${arr.length})`;
+    title.textContent = `${LAYER_NAME[layer]} (${arr.length})`;
     grp.appendChild(title);
     arr.slice(0, 12).forEach(x => {
       const item = document.createElement('span');
@@ -170,7 +226,7 @@ function showPanel(node) {
     });
     if (arr.length > 12) {
       const more = document.createElement('span');
-      more.className = 'meta'; more.textContent = `  …他 ${arr.length - 12} 件`;
+      more.className = 'meta'; more.textContent = L.more(arr.length - 12);
       grp.appendChild(more);
     }
     panelEl.appendChild(grp);
