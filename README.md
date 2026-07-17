@@ -15,7 +15,9 @@ On top of the structure it computes two things a plain graph can't:
 
 It's a single self-contained HTML file. Regenerate with one command. Read-only against your vault. No LLM, no cloud, no telemetry — pure Python stdlib.
 
-![screenshot placeholder](docs/screenshot.png)
+![Thought-Net demo — three layers orbiting](docs/demo.gif)
+
+*(Running on the bundled synthetic vault via `python3 build.py --demo`.)*
 
 ## Why it's different
 
