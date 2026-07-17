@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Thought-Net — 三層思考グラフ</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0e1116; overflow: hidden; }
+  #hud {
+    position: fixed; top: 12px; left: 14px; z-index: 10;
+    color: #c9d1d9; font: 12px/1.7 -apple-system, "Hiragino Sans", sans-serif;
+    background: rgba(14,17,22,.72); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #2d333b;
+  }
+  #hud b { color: #e6edf3; font-size: 13px; }
+  .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  #panel {
+    position: fixed; top: 12px; right: 14px; z-index: 10; width: 300px;
+    max-height: calc(100vh - 24px); overflow-y: auto;
+    color: #c9d1d9; font: 12px/1.6 -apple-system, "Hiragino Sans", sans-serif;
+    background: rgba(14,17,22,.82); padding: 12px 14px; border-radius: 8px;
+    border: 1px solid #2d333b; display: none;
+  }
+  #panel h2 { margin: 0 0 4px; font-size: 14px; color: #e6edf3; word-break: break-word; }
+  #panel .meta { color: #8b949e; margin-bottom: 8px; }
+  #panel .grp { margin-top: 8px; }
+  #panel .grp b { color: #e6edf3; }
+  #panel .n { display: block; padding: 1px 0 1px 10px; color: #adbac7;
+              cursor: pointer; word-break: break-word; }
+  #panel .n:hover { color: #58a6ff; }
+  #panel .close { float: right; cursor: pointer; color: #8b949e; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>Thought-Net</b> <span id="gen"></span>
+  <div id="meter" style="margin:4px 0 2px;font-size:12px"></div>
+  <span class="sw" style="background:#ff7b72"></span>🖥ライブ（今開いてる窓）
+  <span class="sw" style="background:#e8a94e;margin-left:10px"></span>思考層
+  <span class="sw" style="background:#7ee8fa;margin-left:10px"></span>凍結（&gt;21日）
+  <span class="sw" style="background:#8be9a8;margin-left:10px"></span>影響半径（近→遠）
+  <span class="sw" style="background:#5b8dbf;margin-left:10px"></span>知識層（未到達）<br>
+  クリック=近傍ハイライト / ドラッグ=回転 / ホイール=ズーム
+  <details style="margin-top:6px"><summary style="cursor:pointer">📖 読み方（5つの型）</summary>
+    <div style="max-width:420px;padding-top:4px">
+    1. <b>緑のまとまり</b>: 一塊なら収束期、飛び地だらけなら発散期。発散が3日続いたら窓の棚卸し合図<br>
+    2. <b>暗い青の大陸</b>: 今の思考が届いてない知識。緑との境界線が「次につながる予感」の発生地帯<br>
+    3. <b>垂直エッジの細い思考ノード</b>: 記録の薄い空中プロジェクト＝頭の中にしかない（bus factor 警報）<br>
+    4. <b>水色（凍結）が緑の近く</b>: 解凍検討。🌱候補はここを機械化したもの<br>
+    5. <b>🖥ライブが思考層のどこに刺さってるか</b>: 全窓は中央のライブハブ（🖥今の窓）に束ねて表示。ハブから台帳へ橋が伸びてれば継続作業、ハブだけに繋がる窓は未帰属＝新規発散（作業dirが既知プロジェクト外）
+    </div>
+  </details>
+  <div id="thaw"></div>
+</div>
+<div id="panel"></div>
+<div id="graph"></div>
+<script src="3d-force-graph.min.js"></script>
+<script>
+const data = /*__GRAPH_DATA__*/;
+document.getElementById('gen').textContent = '(' + data.generated + ' 生成)';
+
+// 思考モードメーター（発散/収束）を HUD に表示（textContent=XSS安全）
+if (data.focus_meter) {
+  const fm = data.focus_meter;
+  const el = document.getElementById('meter');
+  const col = fm.mode === '発散' ? '#e8a94e' : fm.mode === '収束' ? '#8be9a8' : '#adbac7';
+  const badge = document.createElement('b');
+  badge.textContent = fm.mode; badge.style.color = col;
+  el.append('🧭 思考モード: ', badge,
+    ` — 直近${data.recent_days}日 ${fm.recent_projects}案件 / 窓 ${fm.live_connected}接続・${fm.live_unconnected}未帰属`);
+}
+
+const Z = { 0: -90, 1: 90, 2: 170 };    // 知識層 / 思考層 / ライブ層
+data.nodes.forEach(n => { n.fz = Z[n.layer]; });
+
+const byId = Object.fromEntries(data.nodes.map(n => [n.id, n]));
+const neighbors = {};
+data.links.forEach(l => {
+  (neighbors[l.source] = neighbors[l.source] || new Set()).add(l.target);
+  (neighbors[l.target] = neighbors[l.target] || new Set()).add(l.source);
+});
+
+// 影響半径: dist(直近作業からのグラフ距離)で緑→青へ減光
+const RADIUS_COLORS = ['#8be9a8', '#74c9a6', '#63a8b0', '#5b8dbf'];
+const baseColor = n => {
+  if (n.layer === 2) return '#ff7b72'; // ライブ=今開いてる窓
+  if (n.layer === 1) return n.frozen ? '#7ee8fa' : '#e8a94e';
+  if (typeof n.dist === 'number')
+    return RADIUS_COLORS[Math.min(n.dist, RADIUS_COLORS.length - 1)];
+  return '#39485c'; // 未到達=減光
+};
+let focus = null;
+const color = n =>
+  focus && n.id !== focus.id && !(neighbors[focus.id] || new Set()).has(n.id)
+    ? '#2a2f36'
+    : baseColor(n);
+
+// 解凍候補パネル（build.py がスコア算出済み）。
+// ラベルは vault 由来の未信頼文字列。innerHTML を使わず textContent で組む（XSS 防止）。
+const thawEl = document.getElementById('thaw');
+if (data.thaw && data.thaw.length) {
+  const hr = document.createElement('hr');
+  hr.style.cssText = 'border-color:#2d333b;margin:6px 0';
+  thawEl.appendChild(hr);
+  data.thaw.forEach(t => {
+    const line = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = t.project;                       // textContent = HTML 無効化
+    line.append('🌱 ', b,
+      ` (score ${t.score}, 最終 ${t.last_touch})`);
+    const via = document.createElement('div');
+    via.style.paddingLeft = '1em';
+    via.textContent = '↳ ' + t.via.map(v => `${v.label} (d${v.dist})`).join('・');
+    thawEl.append(line, via);
+  });
+}
+const escHtml = s => String(s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// ---- 選択ノードの要約パネル（近傍を層別に集計。全て textContent=XSS安全）
+const LAYER_NAME = { 0: '知識', 1: '思考', 2: 'ライブ' };
+const panelEl = document.getElementById('panel');
+function showPanel(node) {
+  panelEl.textContent = '';
+  panelEl.style.display = 'block';
+  const close = document.createElement('span');
+  close.className = 'close'; close.textContent = '✕';
+  close.onclick = () => { panelEl.style.display = 'none'; focus = null; g.refresh(); };
+  panelEl.appendChild(close);
+
+  const h = document.createElement('h2');
+  h.textContent = node.label;
+  panelEl.appendChild(h);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const bits = [`層: ${LAYER_NAME[node.layer] || '?'}`, `つながり ${node.degree}`];
+  if (typeof node.dist === 'number') bits.push(`影響距離 ${node.dist}`);
+  if (node.frozen) bits.push('❄ 凍結');
+  if (node.status) bits.push(node.status);
+  meta.textContent = bits.join(' ・ ');
+  panelEl.appendChild(meta);
+
+  // 近傍を層別に分類
+  const nb = [...(neighbors[node.id] || [])].map(id => byId[id]).filter(Boolean);
+  const groups = { 2: [], 1: [], 0: [] };
+  nb.forEach(x => groups[x.layer].push(x));
+  const total = nb.length;
+  const head = document.createElement('div');
+  head.className = 'meta';
+  head.textContent = total
+    ? `直接つながる ${total} 件 — ライブ${groups[2].length}/思考${groups[1].length}/知識${groups[0].length}`
+    : 'つながりなし（孤立ノード）';
+  panelEl.appendChild(head);
+
+  for (const layer of [2, 1, 0]) {
+    const arr = groups[layer].sort((a, b) => b.degree - a.degree);
+    if (!arr.length) continue;
+    const grp = document.createElement('div');
+    grp.className = 'grp';
+    const title = document.createElement('b');
+    title.textContent = `${LAYER_NAME[layer]}層 (${arr.length})`;
+    grp.appendChild(title);
+    arr.slice(0, 12).forEach(x => {
+      const item = document.createElement('span');
+      item.className = 'n';
+      item.textContent = '・' + x.label;
+      item.onclick = () => { focus = x; g.refresh(); showPanel(x);
+                             g.cameraPosition(undefined, x, 600); };
+      grp.appendChild(item);
+    });
+    if (arr.length > 12) {
+      const more = document.createElement('span');
+      more.className = 'meta'; more.textContent = `  …他 ${arr.length - 12} 件`;
+      grp.appendChild(more);
+    }
+    panelEl.appendChild(grp);
+  }
+}
+
+const g = ForceGraph3D()(document.getElementById('graph'))
+  .graphData(data)
+  .backgroundColor('#0e1116')
+  .nodeLabel(n => escHtml(n.label + (n.last_touch ? ' (' + n.last_touch + ')' : '')))
+  .nodeColor(color)
+  .nodeVal(n => Math.max(1, Math.min(n.degree, 30)) * (n.layer === 1 ? 2 : 1))
+  .nodeOpacity(0.92)
+  .linkColor(l => l.kind === 'live' ? '#ff7b72' : l.kind === 'live-hub' ? '#8f4f4a'
+                : l.kind === 'vertical' ? '#d4a24e' : '#3b4654')
+  .linkOpacity(0.35)
+  .linkWidth(l => l.kind === 'live' ? 2.5 : l.kind === 'live-hub' ? 0.7
+                : l.kind === 'vertical' ? 1.2 : 0.3)
+  .onNodeClick(n => {
+    if (focus && focus.id === n.id) { focus = null; panelEl.style.display = 'none'; }
+    else { focus = n; showPanel(n); }
+    g.refresh();
+  })
+  .onBackgroundClick(() => { focus = null; panelEl.style.display = 'none'; g.refresh(); });
+
+g.d3Force('charge').strength(-45);
+// 初期視点は斜め横から＝二層の重なりと垂直エッジが見える角度
+g.cameraPosition({ x: 620, y: 180, z: 40 }, { x: 0, y: 0, z: 0 }, 0);
+</script>
+</body>
+</html>

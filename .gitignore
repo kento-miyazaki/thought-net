@@ -1,0 +1,27 @@
+# --- 生成物・実データは絶対にコミットしない（コードは公開／データは非公開の境界）---
+# 生成された graph.json / thought-net.html は、あなたの vault の中身が写るので非公開
+out/
+*.graph.json
+dangling.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.env
+
+# Node (legacy PoC leftovers — never ship)
+node_modules/
+.next/
+
+# Git worktrees
+.worktrees/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
